@@ -30,19 +30,21 @@ import com.songoda.epicspawners.hooks.*;
 import com.songoda.epicspawners.listeners.*;
 import com.songoda.epicspawners.player.PlayerActionManager;
 import com.songoda.epicspawners.player.PlayerData;
-import com.songoda.epicspawners.spawners.shop.Shop;
 import com.songoda.epicspawners.spawners.SpawnManager;
 import com.songoda.epicspawners.spawners.condition.*;
 import com.songoda.epicspawners.spawners.editor.SpawnerEditor;
+import com.songoda.epicspawners.spawners.shop.Shop;
 import com.songoda.epicspawners.spawners.spawner.ESpawner;
 import com.songoda.epicspawners.spawners.spawner.ESpawnerManager;
 import com.songoda.epicspawners.spawners.spawner.ESpawnerStack;
+import com.songoda.epicspawners.storage.Storage;
+import com.songoda.epicspawners.storage.StorageItem;
+import com.songoda.epicspawners.storage.StorageRow;
+import com.songoda.epicspawners.storage.types.StorageMysql;
+import com.songoda.epicspawners.storage.types.StorageYaml;
 import com.songoda.epicspawners.tasks.SpawnerParticleTask;
 import com.songoda.epicspawners.tasks.SpawnerSpawnTask;
-import com.songoda.epicspawners.utils.ESpawnerDataBuilder;
-import com.songoda.epicspawners.utils.Heads;
-import com.songoda.epicspawners.utils.Methods;
-import com.songoda.epicspawners.utils.SettingsManager;
+import com.songoda.epicspawners.utils.*;
 import com.songoda.epicspawners.utils.gui.AbstractGUI;
 import org.apache.commons.lang.math.NumberUtils;
 import org.bukkit.Bukkit;
@@ -66,15 +68,12 @@ import java.util.function.Supplier;
 
 public class EpicSpawnersPlugin extends JavaPlugin implements EpicSpawners {
 
-    private static EpicSpawnersPlugin INSTANCE;
-
     private static final Set<Biome> BIOMES = EnumSet.allOf(Biome.class);
-
+    private static EpicSpawnersPlugin INSTANCE;
     private References references;
 
     private ChatListeners chatListeners;
 
-    private ConfigWrapper dataFile = new ConfigWrapper(this, "", "data.yml");
     private ConfigWrapper spawnerFile = new ConfigWrapper(this, "", "spawners.yml");
     private ConfigWrapper hooksFile = new ConfigWrapper(this, "", "hooks.yml");
 
@@ -99,6 +98,8 @@ public class EpicSpawnersPlugin extends JavaPlugin implements EpicSpawners {
 
     private List<ProtectionPluginHook> protectionHooks = new ArrayList<>();
     private ClaimableProtectionPluginHook factionsHook, townyHook, aSkyblockHook, uSkyblockHook;
+
+    private Storage storage;
 
     public static EpicSpawnersPlugin getInstance() {
         return INSTANCE;
@@ -142,14 +143,17 @@ public class EpicSpawnersPlugin extends JavaPlugin implements EpicSpawners {
         this.setupConfig();
         this.setupSpawners();
 
-        // Locales
+        String langMode = getConfig().getString("System.Language Mode");
         Locale.init(this);
         Locale.saveDefaultLocale("en_US");
-        this.locale = Locale.getLocale(getConfig().getString("Locale", "en_US"));
+        Locale.saveDefaultLocale("fr_FR");
+        Locale.saveDefaultLocale("pt_BR");
+        Locale.saveDefaultLocale("es_ES");
+        Locale.saveDefaultLocale("nl_NL");
+        Locale.saveDefaultLocale("pr_FA");
+        this.locale = Locale.getLocale(getConfig().getString("System.Language Mode", langMode));
 
         this.hooksFile.createNewFile("Loading Hooks File", "EpicSpawners Hooks File");
-        this.dataFile.createNewFile("Loading Data File", "EpicSpawners Data File");
-        this.loadDataFile();
 
         this.references = new References();
         this.boostManager = new BoostManager();
@@ -163,74 +167,77 @@ public class EpicSpawnersPlugin extends JavaPlugin implements EpicSpawners {
 
         loadSpawnersFromFile();
 
-        FileConfiguration dataConfig = dataFile.getConfig();
+        checkStorage();
 
         Bukkit.getScheduler().runTaskLater(this, () -> {
             // Adding in spawners.
-            if (dataConfig.contains("data.spawners")) {
-                ConfigurationSection currentSection = dataConfig.getConfigurationSection("data.spawners");
+            if (storage.containsGroup("spawners")) {
+                for (StorageRow row : storage.getRowsByGroup("spawners")) {
+                    try {
+                        Location location = Serialize.getInstance().unserializeLocation(row.getKey());
 
-                for (String key : currentSection.getKeys(false)) {
-                    Location location = Serialize.getInstance().unserializeLocation(key);
-
-                    if (location.getWorld() == null || location.getBlock().getType() != Material.SPAWNER) {
-                        if (location.getWorld() != null && location.getBlock().getType() != Material.SPAWNER) {
-                            this.hologramHandler.despawn(location.getBlock());
+                        if (location.getWorld() == null || location.getBlock().getType() != Material.SPAWNER) {
+                            if (location.getWorld() != null && location.getBlock().getType() != Material.SPAWNER) {
+                                this.hologramHandler.despawn(location.getBlock());
+                            }
+                            continue;
                         }
-                        continue;
+
+                        ESpawner spawner = new ESpawner(location);
+
+                        for (String stackKey : row.get("stacks").asString().split(";")) {
+                            if (stackKey == null) continue;
+                            String[] stack = stackKey.split(":");
+                            if (!spawnerManager.isSpawnerData(stack[0].toLowerCase())) continue;
+                            spawner.addSpawnerStack(new ESpawnerStack(spawnerManager.getSpawnerData(stack[0]), Integer.parseInt(stack[1])));
+                        }
+
+                        if (row.getItems().containsKey("placedby"))
+                            spawner.setPlacedBy(UUID.fromString(row.get("placedby").asString()));
+
+                        spawner.setSpawnCount(row.get("spawns").asInt());
+                        this.spawnerManager.addSpawnerToWorld(location, spawner);
+                    } catch (Exception e) {
+                        console.sendMessage("Failed to load spawner.");
                     }
-
-                    ESpawner spawner = new ESpawner(location);
-
-                    for (String stackKey : currentSection.getConfigurationSection(key + ".Stacks").getKeys(false)) {
-                        if (!spawnerManager.isSpawnerData(stackKey.toLowerCase())) continue;
-                        spawner.addSpawnerStack(new ESpawnerStack(spawnerManager.getSpawnerData(stackKey), currentSection.getInt(key + ".Stacks." + stackKey)));
-                    }
-
-                    if (currentSection.contains(key + ".PlacedBy"))
-                        spawner.setPlacedBy(UUID.fromString(currentSection.getString(key + ".PlacedBy")));
-
-                    spawner.setSpawnCount(currentSection.getInt(key + ".Spawns"));
-                    this.spawnerManager.addSpawnerToWorld(location, spawner);
                 }
             }
 
             // Adding in Boosts
-            if (dataConfig.contains("data.boosts")) {
-                ConfigurationSection currentSection = dataConfig.getConfigurationSection("data.boosts");
-
-                for (String key : currentSection.getKeys(false)) {
-                    if (!currentSection.contains(key + ".BoostType")) continue;
+            if (storage.containsGroup("boosts")) {
+                for (StorageRow row : storage.getRowsByGroup("boosts")) {
+                    if (!row.getItems().containsKey("boosttype") || row.get("boosttype").asString().equals(""))
+                        continue;
 
                     BoostData boostData = new BoostData(
-                            BoostType.valueOf(currentSection.getString(key + ".BoostType")),
-                            currentSection.getInt(key + ".Amount"),
-                            Long.parseLong(key),
-                            currentSection.get(key + ".Data"));
+                            BoostType.valueOf(row.get("boosttype").asString()),
+                            row.get("amount").asInt(),
+                            Long.parseLong(row.getKey()),
+                            row.get("data").asObject());
 
                     this.boostManager.addBoostToSpawner(boostData);
                 }
             }
 
             // Adding in Player Data
-            if (dataConfig.contains("data.players")) {
-                ConfigurationSection currentSection = dataConfig.getConfigurationSection("data.players");
-
-                for (String key : currentSection.getKeys(false)) {
-                    PlayerData playerData = playerActionManager.getPlayerAction(UUID.fromString(key));
+            if (storage.containsGroup("players")) {
+                for (StorageRow row : storage.getRowsByGroup("players")) {
+                    PlayerData playerData = playerActionManager.getPlayerAction(UUID.fromString(row.getKey()));
 
                     Map<EntityType, Integer> entityKills = new HashMap<>();
-                    if (!currentSection.contains(key + ".EntityKills")) continue;
-                    for (String key2 : currentSection.getConfigurationSection(key + ".EntityKills").getKeys(false)) {
-                        EntityType entityType = EntityType.valueOf(key2);
-                        int amt = currentSection.getInt(key + ".EntityKills." + key2);
+                    if (row.get("entitykills") == null || row.get("entitykills").asString().equals("")) continue;
+                    for (String entityKillsKey : row.get("entitykills").asString().split(";")) {
+                        if (entityKillsKey == null) continue;
+                        String[] entityKills2 = entityKillsKey.split(":");
+                        if (entityKills2[0] == null || entityKills2[0].equals("")) continue;
+                        EntityType entityType = EntityType.valueOf(entityKills2[0]);
+                        int amt = Integer.parseInt(entityKills2[1]);
                         entityKills.put(entityType, amt);
                     }
 
                     playerData.setEntityKills(entityKills);
                 }
             }
-
             // Save data initially so that if the person reloads again fast they don't lose all their data.
             this.saveToFile();
         }, 10);
@@ -276,6 +283,7 @@ public class EpicSpawnersPlugin extends JavaPlugin implements EpicSpawners {
     @Override
     public void onDisable() {
         this.saveToFile();
+        this.storage.closeConnection();
         this.particleTask.cancel();
         this.protectionHooks.clear();
         this.spawnerCustomSpawnTask.cancel();
@@ -371,7 +379,19 @@ public class EpicSpawnersPlugin extends JavaPlugin implements EpicSpawners {
         }
     }
 
+    private void checkStorage() {
+        if (getConfig().getBoolean("Database.Activate Mysql Support")) {
+            this.storage = new StorageMysql(this);
+        } else {
+            this.storage = new StorageYaml(this);
+        }
+    }
+
     private void saveToFile() {
+
+        this.storage.closeConnection();
+        checkStorage();
+
         //ToDO: If the defaults are set correctly this could do the initial config save.
 
         FileConfiguration spawnerConfig = spawnerFile.getConfig();
@@ -439,46 +459,40 @@ public class EpicSpawnersPlugin extends JavaPlugin implements EpicSpawners {
 
         this.spawnerFile.saveConfig();
 
-        FileConfiguration dataConfig = dataFile.getConfig();
-        dataConfig.set("data", null);
-        ConfigurationSection dataSection = dataConfig.createSection("data");
+        storage.clearFile();
 
-        ConfigurationSection spawnersSection = dataSection.createSection("spawners");
         for (Spawner spawner : spawnerManager.getSpawners()) {
             if (spawner.getFirstStack() == null
                     || spawner.getFirstStack().getSpawnerData() == null
                     || spawner.getLocation() == null
                     || spawner.getLocation().getWorld() == null) continue;
 
-            ConfigurationSection currentSection = spawnersSection.createSection(Serialize.getInstance().serializeLocation(spawner.getLocation()));
+            StorageItem location = new StorageItem("location", Serialize.getInstance().serializeLocation(spawner.getLocation()));
 
+            String stacksStr = "";
             for (SpawnerStack stack : spawner.getSpawnerStacks()) {
-                currentSection.set("Stacks." + stack.getSpawnerData().getIdentifyingName(), stack.getStackSize());
+                stacksStr += stack.getSpawnerData().getIdentifyingName() + ":" + stack.getStackSize() + ";";
             }
+            StorageItem stacks = new StorageItem("stacks", stacksStr);
 
-            currentSection.set("Spawns", spawner.getSpawnCount());
+            StorageItem placedBy = spawner.getPlacedBy() != null ? new StorageItem("placedby", spawner.getPlacedBy().getUniqueId().toString()) : null;
 
-            if (spawner.getPlacedBy() != null) {
-                currentSection.set("PlacedBy", spawner.getPlacedBy().getUniqueId().toString());
-            }
+            storage.saveItem("spawners", location, stacks, new StorageItem("spawns", spawner.getSpawnCount()), placedBy);
         }
 
         for (BoostData boostData : boostManager.getBoosts()) {
-            ConfigurationSection currentSection = dataSection.createSection("boosts." + String.valueOf(boostData.getEndTime()));
-            currentSection.set("BoostType", boostData.getBoostType().name());
-            currentSection.set("Data", boostData.getData());
-            currentSection.set("Amount", boostData.getAmtBoosted());
+            storage.saveItem("boosts", new StorageItem("endtime", String.valueOf(boostData.getEndTime())),
+                    new StorageItem("boosttype", boostData.getBoostType().name()),
+                    new StorageItem("data", boostData.getData()),
+                    new StorageItem("amount", boostData.getAmtBoosted()));
         }
 
         for (PlayerData playerData : playerActionManager.getRegisteredPlayers()) {
-            ConfigurationSection currentSection = dataSection.createSection("players." + playerData.getPlayer().getUniqueId());
 
-            for (Map.Entry<EntityType, Integer> entry : playerData.getEntityKills().entrySet()) {
-                currentSection.set("EntityKills." + entry.getKey().name(), entry.getValue());
-            }
+            storage.saveItem("players", new StorageItem("uuid", playerData.getPlayer().getUniqueId().toString()),
+                    new StorageItem("entitykills", playerData.getEntityKills()));
         }
 
-        this.dataFile.saveConfig();
     }
 
     private <T extends Enum<T>> String[] getStrings(List<T> mats) {
@@ -618,12 +632,9 @@ public class EpicSpawnersPlugin extends JavaPlugin implements EpicSpawners {
         spawnerConfig.addDefault("Entities." + type + ".Conditions.Required Player Distance And Amount", 16 + ":" + 1);
     }
 
-    private void loadDataFile() {
-        this.dataFile.getConfig().options().copyDefaults(true);
-        this.dataFile.saveConfig();
-    }
-
     public void reload() {
+        String langMode = getConfig().getString("System.Language Mode");
+        this.locale = Locale.getLocale(getConfig().getString("System.Language Mode", langMode));
         this.locale.reloadMessages();
         this.spawnerFile.createNewFile("Loading Spawners File", "EpicSpawners Spawners File");
         this.hooksFile.createNewFile("Loading hookHandler File", "EpicSpawners Spawners File");
@@ -821,5 +832,4 @@ public class EpicSpawnersPlugin extends JavaPlugin implements EpicSpawners {
         this.protectionHooks.add(hook);
         this.getLogger().info("Registered protection hook for plugin: " + hook.getPlugin().getName());
     }
-
 }
