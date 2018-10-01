@@ -9,6 +9,7 @@ import com.songoda.epicspawners.player.PlayerData;
 import com.songoda.epicspawners.spawners.spawner.ESpawnerData;
 import com.songoda.epicspawners.utils.Debugger;
 import com.songoda.epicspawners.utils.Methods;
+import com.songoda.epicspawners.utils.ServerVersion;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.Material;
@@ -374,7 +375,7 @@ public class SpawnerEditor {
     public SpawnerData getType(int id) {
         SpawnerData type = EpicSpawnersPlugin.getInstance().getSpawnerManager().getSpawnerData("pig");
         try {
-            if (id >= 33) id++;
+            if (id >= 33 && instance.isServerVersionAtLeast(ServerVersion.V1_9)) id++;
             int num = 1;
             for (SpawnerData spawnerData : EpicSpawnersPlugin.getInstance().getSpawnerManager().getRegisteredSpawnerData().values()) {
                 if (spawnerData.getIdentifyingName().toLowerCase().equals("omni")) continue;
@@ -556,7 +557,7 @@ public class SpawnerEditor {
                     meta.setDisplayName(TextComponent.formatText("&bSpawn Limit"));
                     ArrayList<String> lore = new ArrayList<>();
                     // ToDo: This bit should be some sort of boolean to enable the built in spawn check.
-                    //lore.add(Arconix.pl().format().formatText("&7Currently: &c" + EpicSpawners.getInstance().spawnerFile.getConfig().getInt("Entities." + Methods.getTypeFromString(spawnerData) + ".commandSpawnLimit")));
+                    //lore.add(Arconix.pl().format().formatText("&7Currently: &c" + EpicSpawners.getInstance().spawnerFile.getConfig().asInt("Entities." + Methods.getTypeFromString(spawnerData) + ".commandSpawnLimit")));
                     lore.add("");
                     lore.add(TextComponent.formatText("&7This is the spawn limit for entities you spawn"));
                     lore.add(TextComponent.formatText("&7from this spawner. Set to &60 &7to disable this."));
